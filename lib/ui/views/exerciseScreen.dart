@@ -22,9 +22,9 @@ class _ExerciseScreenState extends State<ExerciseScreen> {
   dynamic _scanResults;
   String poseCoordinates = '';
 
-  // *********************
-  // *** Init State ***
-  // *********************
+  bool isCounting = false; // To control when the counting starts
+  bool hasStarted = false; // To track if the exercise has started or stopped
+
   @override
   void initState() {
     super.initState();
@@ -33,9 +33,6 @@ class _ExerciseScreenState extends State<ExerciseScreen> {
     initializeCamera();
   }
 
-  // *********************
-  // *** Initialise Camera ***
-  // *********************
   void initializeCamera() async {
     WidgetsFlutterBinding.ensureInitialized();
     cameras = await availableCameras();
@@ -49,13 +46,12 @@ class _ExerciseScreenState extends State<ExerciseScreen> {
         return;
       }
       controller?.startImageStream((image) {
-        if (!isBusy) {
+        if (!isBusy && isCounting) { // Only process if not busy and counting
           isBusy = true;
           img = image;
           doPoseEstimationOnFrame();
         }
       });
-      setState(() {});
     }).catchError((e) {
       print('Error initializing camera: $e');
     });
@@ -68,29 +64,49 @@ class _ExerciseScreenState extends State<ExerciseScreen> {
     super.dispose();
   }
 
-  // *********************
-  // *** Pose Estimation ***
-  // *********************
+  bool isInJackPosition = false;
+
   void doPoseEstimationOnFrame() async {
     if (img == null) return;
 
     var inputImage = getInputImage();
-
     final List<Pose> poses = await poseDetector.processImage(inputImage);
     _scanResults = poses;
+
     for (Pose pose in poses) {
-      // to access all landmarks
-      pose.landmarks.forEach((_, landmark) {
-        final type = landmark.type;
-        final x = landmark.x;
-        final y = landmark.y;
-      });
+      // Get landmarks
+      final leftWrist = pose.landmarks[PoseLandmarkType.leftWrist];
+      final rightWrist = pose.landmarks[PoseLandmarkType.rightWrist];
+      final leftAnkle = pose.landmarks[PoseLandmarkType.leftAnkle];
+      final rightAnkle = pose.landmarks[PoseLandmarkType.rightAnkle];
+      final nose = pose.landmarks[PoseLandmarkType.nose];
 
-      // to access specific landmarks
-      final landmark = pose.landmarks[PoseLandmarkType.nose];
+      // Ensure the landmarks are detected
+      if (leftWrist != null && rightWrist != null && leftAnkle != null && rightAnkle != null && nose != null) {
+        // Check if hands are above head (jumping jack "up" position)
+        bool handsAboveHead = leftWrist.y < nose.y && rightWrist.y < nose.y;
+
+        // Check if feet are apart (jumping jack "up" position)
+        bool feetApart = (rightAnkle.x - leftAnkle.x).abs() > 200; // Adjust threshold as needed
+
+        // Check if hands are by the sides (jumping jack "down" position)
+        bool handsBySides = leftWrist.y > nose.y && rightWrist.y > nose.y;
+
+        // Check if feet are together (jumping jack "down" position)
+        bool feetTogether = (rightAnkle.x - leftAnkle.x).abs() < 100; // Adjust threshold as needed
+
+        if (handsAboveHead && feetApart) {
+          // The user is in the "jack" position
+          isInJackPosition = true;
+        } else if (handsBySides && feetTogether && isInJackPosition) {
+          // The user has returned to the "jump" position from the "jack" position
+          setState(() {
+            reps++;
+          });
+          isInJackPosition = false; // Reset the state
+        }
+      }
     }
-
-
 
     setState(() {
       _scanResults;
@@ -108,7 +124,8 @@ class _ExerciseScreenState extends State<ExerciseScreen> {
     final camera = cameras[1];
     final imageRotation =
     InputImageRotationValue.fromRawValue(camera.sensorOrientation);
-    final inputImageFormat = InputImageFormatValue.fromRawValue(img!.format.raw);
+    final inputImageFormat =
+    InputImageFormatValue.fromRawValue(img!.format.raw);
 
     final planeData = img!.planes.map((Plane plane) {
       return InputImagePlaneMetadata(
@@ -131,7 +148,8 @@ class _ExerciseScreenState extends State<ExerciseScreen> {
   Widget buildResult() {
     if (_scanResults == null ||
         controller == null ||
-        !controller!.value.isInitialized) {
+        !controller!.value.isInitialized ||
+        !isCounting) { // Only paint when counting
       return const Text('');
     }
 
@@ -221,7 +239,11 @@ class _ExerciseScreenState extends State<ExerciseScreen> {
                   ),
                 ),
                 ElevatedButton(
-                  onPressed: () {},
+                  onPressed: () {
+                    setState(() {
+                      reps = 0;
+                    });
+                  },
                   style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.blueGrey),
                   child: const Text(
@@ -233,15 +255,27 @@ class _ExerciseScreenState extends State<ExerciseScreen> {
             ),
             Container(
               child: ElevatedButton(
-                onPressed: () {},
+                onPressed: () {
+                  setState(() {
+                    if (hasStarted) {
+                      // If the exercise was started, stop it
+                      isCounting = false;
+                      hasStarted = false;
+                    } else {
+                      // If the exercise was not started, start it
+                      isCounting = true;
+                      hasStarted = true;
+                    }
+                  });
+                },
                 style: ElevatedButton.styleFrom(
                   shape: const CircleBorder(),
                   padding: const EdgeInsets.all(45),
-                  backgroundColor: Colors.black,
+                  backgroundColor: hasStarted ? Colors.red : Colors.black, // Change color based on state
                 ),
-                child: const Text(
-                  "Go",
-                  style: TextStyle(color: Colors.white, fontSize: 35),
+                child: Text(
+                  hasStarted ? "Stop" : "Go", // Change text based on state
+                  style: const TextStyle(color: Colors.white, fontSize: 35),
                 ),
               ),
             )
@@ -280,8 +314,8 @@ class PosePainter extends CustomPainter {
     final double scaleX = size.width / absoluteImageSize.width;
     final double scaleY = size.height / absoluteImageSize.height;
 
-    final jointPaint = Paint()
-      ..style = PaintingStyle.fill
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
       ..strokeWidth = 4.0
       ..color = Colors.green;
 
@@ -295,10 +329,10 @@ class PosePainter extends CustomPainter {
       ..strokeWidth = 3.0
       ..color = Colors.blueAccent;
 
-    final bodyPaint = Paint()
+    final connectingLinePaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 3.0
-      ..color = Colors.redAccent;
+      ..strokeWidth = 4.0
+      ..color = Colors.red;
 
     for (final pose in poses) {
       // Draw circles only on joints
@@ -313,16 +347,14 @@ class PosePainter extends CustomPainter {
             x = size.width - x;
           }
 
-          canvas.drawCircle(Offset(x, y), 6, jointPaint);
+          canvas.drawCircle(Offset(x, y), 4, paint);
         }
       }
 
       void paintLine(PoseLandmarkType type1, PoseLandmarkType type2,
           Paint paintType) {
-        final joint1 = pose.landmarks[type1];
-        final joint2 = pose.landmarks[type2];
-
-        if (joint1 == null || joint2 == null) return;
+        final PoseLandmark joint1 = pose.landmarks[type1]!;
+        final PoseLandmark joint2 = pose.landmarks[type2]!;
 
         double x1 = joint1.x * scaleX;
         double y1 = joint1.y * scaleY;
@@ -345,36 +377,34 @@ class PosePainter extends CustomPainter {
       // Draw arms
       paintLine(PoseLandmarkType.leftShoulder, PoseLandmarkType.leftElbow,
           leftPaint);
-      paintLine(
-          PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist, leftPaint);
+      paintLine(PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist,
+          leftPaint);
       paintLine(PoseLandmarkType.rightShoulder, PoseLandmarkType.rightElbow,
           rightPaint);
-      paintLine(
-          PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist, rightPaint);
+      paintLine(PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist,
+          rightPaint);
 
-      // Draw body connections
-      paintLine(PoseLandmarkType.leftShoulder, PoseLandmarkType.rightShoulder,
-          bodyPaint);
-      paintLine(
-          PoseLandmarkType.leftHip, PoseLandmarkType.rightHip, bodyPaint);
-
-      // Draw torso lines
-      paintLine(
-          PoseLandmarkType.leftShoulder, PoseLandmarkType.leftHip, bodyPaint);
-      paintLine(
-          PoseLandmarkType.rightShoulder, PoseLandmarkType.rightHip, bodyPaint);
+      // Draw body
+      paintLine(PoseLandmarkType.leftShoulder, PoseLandmarkType.leftHip,
+          leftPaint);
+      paintLine(PoseLandmarkType.rightShoulder, PoseLandmarkType.rightHip,
+          rightPaint);
 
       // Draw legs
       paintLine(PoseLandmarkType.leftHip, PoseLandmarkType.leftKnee, leftPaint);
-      paintLine(
-          PoseLandmarkType.leftKnee, PoseLandmarkType.leftAnkle, leftPaint);
-      paintLine(
-          PoseLandmarkType.rightHip, PoseLandmarkType.rightKnee, rightPaint);
-      paintLine(
-          PoseLandmarkType.rightKnee, PoseLandmarkType.rightAnkle, rightPaint);
+      paintLine(PoseLandmarkType.leftKnee, PoseLandmarkType.leftAnkle, leftPaint);
+      paintLine(PoseLandmarkType.rightHip, PoseLandmarkType.rightKnee, rightPaint);
+      paintLine(PoseLandmarkType.rightKnee, PoseLandmarkType.rightAnkle, rightPaint);
+
+      // Draw a line connecting the shoulders
+      paintLine(PoseLandmarkType.leftShoulder, PoseLandmarkType.rightShoulder,
+          connectingLinePaint);
+
+      // Draw a line connecting the hips
+      paintLine(PoseLandmarkType.leftHip, PoseLandmarkType.rightHip,
+          connectingLinePaint);
     }
   }
-
   @override
   bool shouldRepaint(PosePainter oldDelegate) {
     return oldDelegate.absoluteImageSize != absoluteImageSize ||
